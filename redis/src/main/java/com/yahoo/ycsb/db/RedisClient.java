@@ -30,15 +30,9 @@ import com.yahoo.ycsb.DBException;
 import com.yahoo.ycsb.Status;
 import com.yahoo.ycsb.StringByteIterator;
 
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.Protocol;
+import redis.clients.jedis.*;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Properties;
-import java.util.Set;
-import java.util.Vector;
+import java.util.*;
 
 /**
  * YCSB binding for <a href="http://redis.io/">Redis</a>.
@@ -47,11 +41,12 @@ import java.util.Vector;
  */
 public class RedisClient extends DB {
 
-  private Jedis jedis;
+  private JedisCommands jedis;
 
   public static final String HOST_PROPERTY = "redis.host";
   public static final String PORT_PROPERTY = "redis.port";
   public static final String PASSWORD_PROPERTY = "redis.password";
+  public static final String CLUSTER_PROPERTY = "redis.cluster";
 
   public static final String INDEX_KEY = "_indices";
 
@@ -67,17 +62,22 @@ public class RedisClient extends DB {
     }
     String host = props.getProperty(HOST_PROPERTY);
 
-    jedis = new Jedis(host, port);
-    jedis.connect();
+    String cluster = props.getProperty(CLUSTER_PROPERTY);
+    if (cluster != null && cluster.equalsIgnoreCase("true")) {
+      jedis = new JedisCluster(new HostAndPort(host, port));
 
-    String password = props.getProperty(PASSWORD_PROPERTY);
-    if (password != null) {
-      jedis.auth(password);
+    } else {
+      jedis = new Jedis(host, port);
     }
+
+//    String password = props.getProperty(PASSWORD_PROPERTY);
+//    if (password != null) {
+//     // jedis.auth(password);
+//    }
   }
 
   public void cleanup() throws DBException {
-    jedis.disconnect();
+    //jedis.disconnect();
   }
 
   /*
@@ -117,12 +117,22 @@ public class RedisClient extends DB {
   @Override
   public Status insert(String table, String key,
       HashMap<String, ByteIterator> values) {
-    if (jedis.hmset(key, StringByteIterator.getStringMap(values))
-        .equals("OK")) {
-      jedis.zadd(INDEX_KEY, hash(key), key);
+    Long result = putInSortedSet(table, values);
+    if (result == 1) {
       return Status.OK;
     }
     return Status.ERROR;
+  }
+
+  private Long putInSortedSet(String table, HashMap<String, ByteIterator> values) {
+    if (values.size() > 1) {
+      throw new IllegalStateException("Redis sorted set does not support Map for value");
+    }
+    Long result = null;
+    for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
+      result = jedis.zadd(table, entry.getKey().hashCode(), entry.getValue().toString());
+    }
+    return result;
   }
 
   @Override
@@ -134,8 +144,11 @@ public class RedisClient extends DB {
   @Override
   public Status update(String table, String key,
       HashMap<String, ByteIterator> values) {
-    return jedis.hmset(key, StringByteIterator.getStringMap(values))
-        .equals("OK") ? Status.OK : Status.ERROR;
+    Long result = putInSortedSet(table, values);
+    if (result == 0) {
+      return Status.OK;
+    }
+    return Status.ERROR;
   }
 
   @Override
